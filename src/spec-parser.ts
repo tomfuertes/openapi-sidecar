@@ -26,7 +26,17 @@ export async function parseSpec(
 
   const info = api.info ?? {}
   const servers = api.servers ?? []
-  const baseUrl = servers[0]?.url ?? ''
+  let baseUrl = servers[0]?.url ?? ''
+
+  // If no server URL in spec, derive from source URL (strip path to /doc endpoint)
+  if (!baseUrl && typeof spec === 'string') {
+    try {
+      const specUrl = new URL(spec)
+      baseUrl = specUrl.origin
+    } catch {
+      // spec was a file path, not a URL — leave baseUrl empty
+    }
+  }
 
   const endpoints: EndpointDescriptor[] = []
   const paths = (api.paths ?? {}) as Record<string, Record<string, unknown>>

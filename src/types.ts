@@ -19,7 +19,11 @@ export interface SidecarConfig {
   spec: string | Record<string, unknown>
   auth: AuthConfig
   llm: LLMConfig
-  /** Max agent loop iterations (default 5, set 1 for single-shot) */
+  /** Override the base URL for API calls (defaults to spec's servers[0].url) */
+  baseUrl?: string
+  /** Log internal steps (tool calls, execution results) */
+  debug?: boolean
+  /** Max agent loop iterations (default 10) */
   maxIterations?: number
 }
 
@@ -39,16 +43,40 @@ export interface QueryMeta {
   tokens: { prompt: number; completion: number }
 }
 
+// -- Tool calling types (OpenAI-compatible) --
+
+export interface ToolCall {
+  id: string
+  type: 'function'
+  function: { name: string; arguments: string }
+}
+
+export interface ToolDefinition {
+  type: 'function'
+  function: {
+    name: string
+    description: string
+    parameters: Record<string, unknown>
+  }
+}
+
 /** Chat message for the LLM conversation */
 export interface ChatMessage {
-  role: 'system' | 'user' | 'assistant'
-  content: string
+  role: 'system' | 'user' | 'assistant' | 'tool'
+  content: string | null
+  tool_calls?: ToolCall[]
+  tool_call_id?: string
+  name?: string
 }
 
 /** Shape of the LLM chat completion response (OpenAI-compatible subset) */
 export interface ChatCompletionResponse {
   choices: Array<{
-    message: { role: string; content: string }
+    message: {
+      role: string
+      content: string | null
+      tool_calls?: ToolCall[]
+    }
     finish_reason: string
   }>
   usage?: {
@@ -70,4 +98,12 @@ export interface EndpointDescriptor {
     schema?: Record<string, unknown>
   }>
   responseSchema?: Record<string, unknown>
+}
+
+/** Request options for the execute tool's codemode.request() */
+export interface RequestOptions {
+  method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'
+  path: string
+  query?: Record<string, string | number | boolean | undefined>
+  body?: unknown
 }

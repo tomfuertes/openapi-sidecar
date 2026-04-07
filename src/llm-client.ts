@@ -1,4 +1,4 @@
-import type { LLMConfig, ChatMessage, ChatCompletionResponse } from './types.js'
+import type { LLMConfig, ChatMessage, ChatCompletionResponse, ToolDefinition } from './types.js'
 
 /**
  * Minimal OpenAI-compatible chat completions client.
@@ -15,24 +15,33 @@ export class LLMClient {
     this.model = config.model
   }
 
-  async chat(messages: ChatMessage[]): Promise<ChatCompletionResponse> {
+  async chat(
+    messages: ChatMessage[],
+    tools?: ToolDefinition[],
+  ): Promise<ChatCompletionResponse> {
     const url = `${this.baseUrl}/chat/completions`
+
+    const body: Record<string, unknown> = {
+      model: this.model,
+      messages,
+      temperature: 0,
+    }
+    if (tools && tools.length > 0) {
+      body.tools = tools
+    }
+
     const res = await fetch(url, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${this.apiKey}`,
       },
-      body: JSON.stringify({
-        model: this.model,
-        messages,
-        temperature: 0,
-      }),
+      body: JSON.stringify(body),
     })
 
     if (!res.ok) {
-      const body = await res.text().catch(() => '')
-      throw new Error(`LLM request failed (${res.status}): ${body}`)
+      const text = await res.text().catch(() => '')
+      throw new Error(`LLM request failed (${res.status}): ${text}`)
     }
 
     return (await res.json()) as ChatCompletionResponse

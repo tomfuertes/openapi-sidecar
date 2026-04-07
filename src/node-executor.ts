@@ -1,17 +1,12 @@
 import vm from 'vm'
-import { applyAuth } from './auth.js'
-import type { AuthConfig } from './types.js'
 
 export interface ExecuteResult {
   result: unknown
   error?: string
   logs: string[]
-  endpointsCalled: string[]
 }
 
 interface ExecutorConfig {
-  auth: AuthConfig
-  baseUrl: string
   /** Execution timeout in ms (default 30000) */
   timeout?: number
 }
@@ -19,49 +14,27 @@ interface ExecutorConfig {
 /**
  * Execute LLM-generated code in a Node.js vm sandbox.
  *
- * The sandbox gets an `api` proxy object with get/post/put/patch/delete methods.
- * These proxy calls route back to the host where auth is injected and real
- * HTTP requests are made. Secrets never enter the sandbox.
+ * The sandbox gets a `codemode` proxy object whose methods are provided
+ * per-call by the agent loop (e.g. spec() for search, request() for execute).
+ * Secrets never enter the sandbox — auth is handled by the host-side request fn.
  */
 export class NodeExecutor {
-  private config: ExecutorConfig
+  private timeout: number
 
-  constructor(config: ExecutorConfig) {
-    this.config = config
+  constructor(config?: ExecutorConfig) {
+    this.timeout = config?.timeout ?? 30_000
   }
 
-  async execute(code: string): Promise<ExecuteResult> {
+  async execute(
+    code: string,
+    fns: Record<string, (...args: unknown[]) => Promise<unknown>>,
+  ): Promise<ExecuteResult> {
     const logs: string[] = []
-    const endpointsCalled: string[] = []
 
-    // Build the api proxy that routes HTTP calls through the host
-    const makeReq = this.makeRequest.bind(this)
-    const apiProxy = {
-      async get(path: string, params?: Record<string, unknown>) {
-        endpointsCalled.push(`GET ${path}`)
-        const text = await makeReq('GET', path, JSON.stringify(params ?? {}))
-        return JSON.parse(text)
-      },
-      async post(path: string, body?: unknown) {
-        endpointsCalled.push(`POST ${path}`)
-        const text = await makeReq('POST', path, JSON.stringify(body ?? {}))
-        return JSON.parse(text)
-      },
-      async put(path: string, body?: unknown) {
-        endpointsCalled.push(`PUT ${path}`)
-        const text = await makeReq('PUT', path, JSON.stringify(body ?? {}))
-        return JSON.parse(text)
-      },
-      async patch(path: string, body?: unknown) {
-        endpointsCalled.push(`PATCH ${path}`)
-        const text = await makeReq('PATCH', path, JSON.stringify(body ?? {}))
-        return JSON.parse(text)
-      },
-      async delete(path: string, params?: Record<string, unknown>) {
-        endpointsCalled.push(`DELETE ${path}`)
-        const text = await makeReq('DELETE', path, JSON.stringify(params ?? {}))
-        return JSON.parse(text)
-      },
+    // Build the api proxy from provided fns
+    const apiProxy: Record<string, (...args: unknown[]) => Promise<unknown>> = {}
+    for (const [name, fn] of Object.entries(fns)) {
+      apiProxy[name] = fn
     }
 
     const sandbox = {
@@ -96,73 +69,24 @@ export class NodeExecutor {
 
     const context = vm.createContext(sandbox)
 
-    const wrappedCode = `(async () => {\n${code}\n})()`
+    // Wrap as an immediately-invoked async arrow function
+    const wrappedCode = `(${code})()`
 
     try {
       const script = new vm.Script(wrappedCode, { filename: 'sidecar-sandbox.js' })
       const resultPromise = script.runInContext(context, {
-        timeout: this.config.timeout ?? 30_000,
+        timeout: this.timeout,
       })
 
       const result = await resultPromise
 
-      return { result, logs, endpointsCalled }
+      return { result, logs }
     } catch (err) {
       return {
         result: null,
         error: err instanceof Error ? err.message : String(err),
         logs,
-        endpointsCalled,
       }
     }
-  }
-
-  /** Called from sandbox via proxy — runs on host with full auth */
-  private async makeRequest(
-    method: string,
-    path: string,
-    bodyOrParams: string,
-  ): Promise<string> {
-    const parsed = JSON.parse(bodyOrParams || '{}')
-    let url = `${this.config.baseUrl.replace(/\/+$/, '')}${path}`
-
-    const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
-    }
-
-    // Apply auth on the host side — secrets stay here
-    const authed = applyAuth(url, headers, this.config.auth)
-    url = authed.url
-    Object.assign(headers, authed.headers)
-
-    // Add query params for GET/DELETE
-    if (['GET', 'DELETE'].includes(method.toUpperCase()) && parsed && Object.keys(parsed).length > 0) {
-      const u = new URL(url)
-      for (const [k, v] of Object.entries(parsed)) {
-        u.searchParams.set(k, String(v))
-      }
-      url = u.toString()
-    }
-
-    const fetchOpts: RequestInit = {
-      method: method.toUpperCase(),
-      headers,
-    }
-
-    // Add body for POST/PUT/PATCH
-    if (['POST', 'PUT', 'PATCH'].includes(method.toUpperCase())) {
-      fetchOpts.body = JSON.stringify(parsed)
-    }
-
-    const res = await fetch(url, fetchOpts)
-    const text = await res.text()
-
-    if (!res.ok) {
-      throw new Error(
-        `API ${method.toUpperCase()} ${path} returned ${res.status}: ${text.slice(0, 500)}`,
-      )
-    }
-
-    return text
   }
 }
