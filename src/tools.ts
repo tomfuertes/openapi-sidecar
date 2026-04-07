@@ -90,6 +90,8 @@ function generateResponseTypes(endpoints: EndpointDescriptor[]): string {
 export function buildTools(endpoints: EndpointDescriptor[]): ToolDefinition[] {
   const responseTypes = generateResponseTypes(endpoints)
 
+  // Response types are injected into the search tool's context so the LLM
+  // discovers them via search, not upfront in the execute tool description.
   const requestTypes = `
 interface RequestOptions {
   method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
@@ -100,21 +102,19 @@ interface RequestOptions {
 
 declare const api: {
   request(options: RequestOptions): Promise<unknown>;
-};
-
-${responseTypes}`
+};`
 
   return [
     {
       type: 'function',
       function: {
         name: 'search',
-        description: `Search the OpenAPI spec. All $refs are pre-resolved inline.
+        description: `Search the OpenAPI spec to discover endpoints, parameters, and schemas. All $refs are pre-resolved inline. You MUST use this tool before calling execute.
 
 Types:
 ${SPEC_TYPES}
 
-Your code must be an async arrow function that returns the result.
+${responseTypes ? `Known response types (from spec):\n${responseTypes}\n` : ''}Your code must be an async arrow function that returns the result.
 
 Examples:
 
@@ -160,7 +160,7 @@ async () => {
       type: 'function',
       function: {
         name: 'execute',
-        description: `Execute API calls and return a structured result. First use 'search' to find the right endpoints and their parameters.
+        description: `Execute API calls and return a structured result. You MUST use 'search' first to discover the correct endpoints and parameters — do not guess paths.
 
 Available in your code:
 ${requestTypes}
@@ -171,24 +171,24 @@ Return: { answer: "natural language summary", data: <relevant structured data> }
 
 Examples:
 
-// Chain: fetch, filter, count
+// Fetch a list, filter, count
 async () => {
-  const churches = (await api.request({ method: "GET", path: "/api/v1/churches" })).data;
-  const phase2 = churches.filter(c => c.currentPhase === 2);
+  const items = (await api.request({ method: "GET", path: "/discovered/path" })).data;
+  const filtered = items.filter(i => i.status === "active");
   return {
-    answer: \`Found \${phase2.length} phase 2 churches.\`,
-    data: phase2.map(c => ({ id: c.id, name: c.name }))
+    answer: \`Found \${filtered.length} active items.\`,
+    data: filtered.map(i => ({ id: i.id, name: i.name }))
   };
 }
 
-// Chain: fetch related resources, join, summarize
+// Chain multiple endpoints, join, summarize
 async () => {
-  const churches = (await api.request({ method: "GET", path: "/api/v1/churches" })).data;
-  const people = (await api.request({ method: "GET", path: "/api/v1/people" })).data;
-  const phase2Ids = new Set(churches.filter(c => c.currentPhase === 2).map(c => c.id));
-  const matched = people.filter(p => phase2Ids.has(p.churchId));
+  const parents = (await api.request({ method: "GET", path: "/discovered/parents" })).data;
+  const children = (await api.request({ method: "GET", path: "/discovered/children" })).data;
+  const targetIds = new Set(parents.filter(p => p.type === "target").map(p => p.id));
+  const matched = children.filter(c => targetIds.has(c.parentId));
   return {
-    answer: \`\${matched.length} people across \${phase2Ids.size} phase 2 churches.\`,
+    answer: \`\${matched.length} children across \${targetIds.size} target parents.\`,
     data: matched
   };
 }`,
