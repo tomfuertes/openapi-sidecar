@@ -43,7 +43,7 @@ export async function parseSpec(
 
   for (const [path, methods] of Object.entries(paths)) {
     for (const [method, opObj] of Object.entries(methods)) {
-      if (['get', 'post', 'put', 'patch', 'delete'].includes(method)) {
+      if (method === 'get') {
         const op = opObj as Record<string, unknown>
         const params = (op.parameters ?? []) as EndpointDescriptor['parameters']
 

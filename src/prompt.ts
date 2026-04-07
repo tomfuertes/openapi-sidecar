@@ -1,14 +1,47 @@
-import type { ParsedSpec } from './spec-parser.js'
+import type { EndpointDescriptor } from './types.js'
 
 /**
- * Build a minimal system prompt.
- * All instructions live in the tool descriptions — the system prompt
- * just sets the role and tells the LLM to use the tools.
+ * Build a compact endpoint index for the system prompt.
+ * One line per endpoint + indented param list. ~50-100 bytes per endpoint.
  */
-export function buildSystemPrompt(spec: ParsedSpec): string {
-  return `You are an API assistant for "${spec.title}" v${spec.version}.
+function buildEndpointIndex(endpoints: EndpointDescriptor[]): string {
+  return endpoints.map(ep => {
+    const params = ep.parameters ?? []
+    const byLocation: Record<string, string[]> = {}
 
-Use the search tool to explore the API spec and discover endpoints, parameters, and schemas.
-Then use the execute tool to make API calls with the correct parameters.
-Answer the user's question with a natural language summary.`
+    for (const p of params) {
+      const loc = p.in
+      if (!byLocation[loc]) byLocation[loc] = []
+      byLocation[loc].push(p.required ? p.name : `${p.name}?`)
+    }
+
+    let line = `${ep.method} ${ep.path}`
+    if (ep.summary) line += ` — ${ep.summary}`
+
+    const paramLines = Object.entries(byLocation)
+      .map(([loc, names]) => `  ${loc}: ${names.join(', ')}`)
+
+    return paramLines.length ? `${line}\n${paramLines.join('\n')}` : line
+  }).join('\n')
+}
+
+/**
+ * Build the system prompt with a compact spec index baked in.
+ * This is the cacheable prefix — identical across turns in one session.
+ */
+export function buildSystemPrompt(
+  title: string,
+  version: string,
+  endpoints: EndpointDescriptor[],
+): string {
+  const index = buildEndpointIndex(endpoints)
+
+  return `You are a read-only API assistant for "${title}" v${version}.
+Write JavaScript code to answer the user's question using the endpoints below.
+
+Endpoints:
+${index}
+
+api.request({ method: "GET", path, query? }) makes an authenticated call.
+Return { answer: "natural language summary", data: <structured> }.`
 }

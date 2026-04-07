@@ -23,11 +23,8 @@ function truncate(content: unknown): string {
 }
 
 /**
- * Core agent loop: prompt LLM with tools → handle tool calls → feed results back → repeat.
- *
- * Two tools:
- *   search  — runs code with codemode.spec() to explore the OpenAPI spec
- *   execute — runs code with codemode.request() to make authenticated API calls
+ * Core agent loop: prompt LLM with single execute tool → handle tool call → feed result back.
+ * Spec index is baked into the system prompt so the LLM can one-shot most queries.
  */
 export async function runAgentLoop(params: AgentLoopParams): Promise<QueryResult> {
   const { question, spec, auth, llm, maxIterations, debug } = params
@@ -37,9 +34,9 @@ export async function runAgentLoop(params: AgentLoopParams): Promise<QueryResult
 
   const client = new LLMClient(llm)
   const executor = new NodeExecutor()
-  const tools = buildTools(spec.endpoints)
+  const tools = buildTools()
 
-  const systemPrompt = buildSystemPrompt(spec)
+  const systemPrompt = buildSystemPrompt(spec.title, spec.version, spec.endpoints)
   log('system prompt:\n', systemPrompt)
 
   const messages: ChatMessage[] = [
@@ -110,40 +107,41 @@ export async function runAgentLoop(params: AgentLoopParams): Promise<QueryResult
       log(`tool call: ${name}`)
       log('code:\n', code)
 
-      let execResult
-
-      if (name === 'search') {
-        // Search: sandbox gets codemode.spec() → returns resolved spec
-        execResult = await executor.execute(code, {
-          spec: async () => spec.raw,
+      if (name !== 'execute') {
+        messages.push({
+          role: 'tool',
+          tool_call_id: toolCall.id,
+          name,
+          content: `Error: Unknown tool "${name}"`,
         })
-      } else if (name === 'execute') {
-        // Execute: sandbox gets codemode.request() → host-side HTTP with auth
-        execResult = await executor.execute(code, {
-          request: async (opts: unknown) => {
-            const { method, path, query, body } = opts as RequestOptions
-            allEndpointsCalled.push(`${method} ${path}`)
-            return makeRequest(spec.baseUrl, auth, method, path, query, body)
-          },
-        })
+        continue
+      }
 
-        // If execute returned { answer, data }, short-circuit — no extra LLM turn needed
-        const execData = execResult.result as { answer?: string; data?: unknown } | null | undefined
-        if (!execResult.error && execData?.answer) {
-          const result = {
-            answer: execData.answer,
-            data: execData.data ?? null,
-            meta: {
-              iterations: iteration,
-              endpoints_called: allEndpointsCalled,
-              tokens: { prompt: totalPromptTokens, completion: totalCompletionTokens },
-            },
+      const execResult = await executor.execute(code, {
+        request: async (opts: unknown) => {
+          const { method, path, query } = opts as RequestOptions
+          if (method.toUpperCase() !== 'GET') {
+            throw new Error(`Only GET requests are allowed (got ${method})`)
           }
-          log('result (short-circuit):', JSON.stringify(result, null, 2))
-          return result
+          allEndpointsCalled.push(`${method} ${path}`)
+          return makeRequest(spec.baseUrl, auth, method, path, query)
+        },
+      })
+
+      // If execute returned { answer, data }, short-circuit — no extra LLM turn needed
+      const execData = execResult.result as { answer?: string; data?: unknown } | null | undefined
+      if (!execResult.error && execData?.answer) {
+        const result = {
+          answer: execData.answer,
+          data: execData.data ?? null,
+          meta: {
+            iterations: iteration,
+            endpoints_called: allEndpointsCalled,
+            tokens: { prompt: totalPromptTokens, completion: totalCompletionTokens },
+          },
         }
-      } else {
-        execResult = { result: null, error: `Unknown tool: ${name}`, logs: [] }
+        log('result (short-circuit):', JSON.stringify(result, null, 2))
+        return result
       }
 
       if (execResult.logs.length > 0) log('sandbox logs:', execResult.logs)
@@ -166,14 +164,13 @@ export async function runAgentLoop(params: AgentLoopParams): Promise<QueryResult
   throw new Error(`Agent loop completed ${maxIterations} iterations without a result`)
 }
 
-/** Host-side HTTP request — auth injected here, never enters sandbox */
+/** Host-side GET request — auth injected here, never enters sandbox */
 async function makeRequest(
   baseUrl: string,
   auth: AuthConfig,
   method: string,
   path: string,
   query?: Record<string, string | number | boolean | undefined>,
-  body?: unknown,
 ): Promise<unknown> {
   let url = `${baseUrl.replace(/\/+$/, '')}${path}`
 
@@ -185,7 +182,6 @@ async function makeRequest(
   url = authed.url
   Object.assign(headers, authed.headers)
 
-  // Add query params
   if (query && Object.keys(query).length > 0) {
     const u = new URL(url)
     for (const [k, v] of Object.entries(query)) {
@@ -194,16 +190,7 @@ async function makeRequest(
     url = u.toString()
   }
 
-  const fetchOpts: RequestInit = {
-    method: method.toUpperCase(),
-    headers,
-  }
-
-  if (['POST', 'PUT', 'PATCH'].includes(method.toUpperCase()) && body) {
-    fetchOpts.body = JSON.stringify(body)
-  }
-
-  const res = await fetch(url, fetchOpts)
+  const res = await fetch(url, { method: method.toUpperCase(), headers })
   const text = await res.text()
 
   if (!res.ok) {
