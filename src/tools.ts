@@ -1,4 +1,4 @@
-import { jsonSchemaToType } from '@cloudflare/codemode'
+import { jsonSchemaToType } from './json-schema-to-type.js'
 import type { JSONSchema7 } from 'json-schema'
 import type { ToolDefinition, EndpointDescriptor } from './types.js'
 

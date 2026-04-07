@@ -1,6 +1,6 @@
 {
   "name": "openapi-sidecar",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "OpenAPI spec + LLM → structured API answers via tool-calling with sandboxed code execution",
   "type": "module",
   "main": "./dist/index.cjs",
@@ -23,7 +23,7 @@
   },
   "dependencies": {
     "@apidevtools/swagger-parser": "^10.1.1",
-    "@cloudflare/codemode": "^0.2.1"
+    "acorn": "^8.14.0"
   },
   "peerDependencies": {
     "zod": "^3.23.0"

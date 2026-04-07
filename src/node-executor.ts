@@ -1,4 +1,5 @@
 import vm from 'vm'
+import { normalizeCode } from './normalize.js'
 
 export interface ExecuteResult {
   result: unknown
@@ -69,8 +70,9 @@ export class NodeExecutor {
 
     const context = vm.createContext(sandbox)
 
-    // Wrap as an immediately-invoked async arrow function
-    const wrappedCode = `(${code})()`
+    // Normalize LLM output (strip fences, handle named fns, etc.) then invoke
+    const normalized = normalizeCode(code)
+    const wrappedCode = `(${normalized})()`
 
     try {
       const script = new vm.Script(wrappedCode, { filename: 'sidecar-sandbox.js' })
